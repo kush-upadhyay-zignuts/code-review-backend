@@ -13,12 +13,15 @@ export class IssueValidatorService {
   private readonly logger = new Logger(IssueValidatorService.name);
   private readonly model: string;
   private readonly enabled: boolean;
+  private readonly minConfidence: number;
 
   constructor(private readonly configService: ConfigService) {
     this.model =
       this.configService.get<string>('ai.model')?.trim() || 'gpt-4o-mini';
     this.enabled =
       this.configService.get<string>('ai.validatorEnabled', 'true') === 'true';
+    this.minConfidence =
+      this.configService.get<number>('ai.minConfidence') ?? 80;
   }
 
   private getOpenAiClient(): OpenAI | null {
@@ -36,7 +39,7 @@ export class IssueValidatorService {
     language: string,
     issues: CodeReviewIssue[],
   ): Promise<{ issues: CodeReviewIssue[]; rejectedCount: number }> {
-    const preFiltered = processIssues(issues);
+    const preFiltered = processIssues(issues, this.minConfidence);
     if (!preFiltered.length) {
       return { issues: [], rejectedCount: 0 };
     }
@@ -74,12 +77,23 @@ export class IssueValidatorService {
         (Array.isArray(parsed.issues) ? parsed.issues : [])
           .map((item) => this.normalizeIssue(item as Record<string, unknown>))
           .filter((issue): issue is CodeReviewIssue => issue !== null),
+        this.minConfidence,
       );
 
       const rejectedCount =
         typeof parsed.rejectedCount === 'number'
           ? parsed.rejectedCount
           : Math.max(0, preFiltered.length - validated.length);
+
+      if (
+        preFiltered.length >= 4 &&
+        validated.length < Math.ceil(preFiltered.length * 0.55)
+      ) {
+        this.logger.warn(
+          `Validator pruned too aggressively (${preFiltered.length} → ${validated.length}); keeping pre-filtered findings`,
+        );
+        return { issues: preFiltered, rejectedCount: 0 };
+      }
 
       this.logger.log(
         `Validator: ${preFiltered.length} proposed → ${validated.length} validated (${rejectedCount} rejected)`,

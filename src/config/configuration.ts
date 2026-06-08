@@ -27,7 +27,7 @@ export const aiConfig = registerAs('ai', () => ({
   apiKey: process.env.AI_API_KEY ?? '',
   baseUrl: process.env.AI_BASE_URL ?? 'https://api.openai.com/v1',
   model: process.env.AI_MODEL ?? 'gpt-4o-mini',
-  maxOutputTokens: parseInt(process.env.AI_MAX_OUTPUT_TOKENS ?? '4096', 10),
+  maxOutputTokens: parseInt(process.env.AI_MAX_OUTPUT_TOKENS ?? '8192', 10),
   validatorEnabled: process.env.AI_VALIDATOR_ENABLED ?? 'true',
   minConfidence: parseInt(process.env.AI_MIN_CONFIDENCE ?? '80', 10),
 }));

@@ -1,24 +1,24 @@
 import { CodeReviewIssue } from './interfaces/code-review.interface';
 
-const MIN_CONFIDENCE = 80;
+export const DEFAULT_MIN_CONFIDENCE = 80;
 
 export function filterByConfidence(
   issues: CodeReviewIssue[],
-  minConfidence = MIN_CONFIDENCE,
+  minConfidence = DEFAULT_MIN_CONFIDENCE,
 ): CodeReviewIssue[] {
   return issues.filter((issue) => issue.confidence >= minConfidence);
 }
 
-function normalizeKey(title: string, line: number | null): string {
-  return `${title.toLowerCase().replace(/\s+/g, ' ').trim()}|${line ?? 'n'}`;
-}
-
-/** Deduplicate findings that share the same title + line (same root cause). */
+/** Merge only exact duplicates: same line, category, and normalized title. */
 export function deduplicateIssues(issues: CodeReviewIssue[]): CodeReviewIssue[] {
   const seen = new Map<string, CodeReviewIssue>();
 
   for (const issue of issues) {
-    const key = normalizeKey(issue.title, issue.line);
+    const key = [
+      issue.line ?? 'n',
+      issue.category.toLowerCase(),
+      issue.title.toLowerCase().replace(/\s+/g, ' ').trim(),
+    ].join('|');
     const existing = seen.get(key);
     if (!existing || issue.confidence > existing.confidence) {
       seen.set(key, issue);
@@ -28,6 +28,9 @@ export function deduplicateIssues(issues: CodeReviewIssue[]): CodeReviewIssue[] 
   return [...seen.values()];
 }
 
-export function processIssues(issues: CodeReviewIssue[]): CodeReviewIssue[] {
-  return deduplicateIssues(filterByConfidence(issues));
+export function processIssues(
+  issues: CodeReviewIssue[],
+  minConfidence = DEFAULT_MIN_CONFIDENCE,
+): CodeReviewIssue[] {
+  return deduplicateIssues(filterByConfidence(issues, minConfidence));
 }
