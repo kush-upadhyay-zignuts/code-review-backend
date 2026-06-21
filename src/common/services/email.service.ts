@@ -16,10 +16,12 @@ export class EmailService {
       return null;
     }
 
+    const port = this.configService.get<number>('email.port', 587);
+
     return nodemailer.createTransport({
       host: this.configService.get<string>('email.host', 'smtp.gmail.com'),
-      port: this.configService.get<number>('email.port', 587),
-      secure: false,
+      port,
+      secure: port === 465,
       auth: { user, pass },
       connectionTimeout: 10_000,
       socketTimeout: 10_000,
