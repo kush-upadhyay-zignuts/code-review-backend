@@ -84,7 +84,8 @@ export class AuthService {
       );
       const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
 
-      await this.emailService.sendPasswordResetEmail(user.email, resetUrl);
+      // Fire-and-forget: token is already saved — don't block the response on SMTP
+      void this.emailService.sendPasswordResetEmail(user.email, resetUrl);
     }
 
     return {
