@@ -23,9 +23,11 @@ export class EmailService {
       port,
       secure: port === 465,
       auth: { user, pass },
-      connectionTimeout: 10_000,
-      socketTimeout: 10_000,
-      greetingTimeout: 10_000,
+      requireTLS: true,
+      // Fail fast if SMTP is unreachable (e.g. port blocked on cloud servers)
+      connectionTimeout: 30_000,
+      socketTimeout: 30_000,
+      greetingTimeout: 30_000,
     });
   }
 
