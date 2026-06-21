@@ -18,10 +18,9 @@ export class EmailService {
 
     return nodemailer.createTransport({
       host: this.configService.get<string>('email.host', 'smtp.gmail.com'),
-      port: this.configService.get<number>('email.port', 465),
-      secure: true,
+      port: this.configService.get<number>('email.port', 587),
+      secure: false,
       auth: { user, pass },
-      // Fail fast if SMTP is unreachable (e.g. port blocked on cloud servers)
       connectionTimeout: 10_000,
       socketTimeout: 10_000,
       greetingTimeout: 10_000,
