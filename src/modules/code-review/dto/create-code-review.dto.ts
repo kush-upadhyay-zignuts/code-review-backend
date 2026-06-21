@@ -1,6 +1,7 @@
 import {
   IsIn,
   IsNotEmpty,
+  IsOptional,
   IsString,
   MaxLength,
   MinLength,
@@ -30,9 +31,10 @@ export class CreateCodeReviewDto {
   @MaxLength(50_000)
   code!: string;
 
+  @IsOptional()
   @IsString()
   @IsIn(SUPPORTED_LANGUAGES)
-  language!: SupportedLanguage;
+  language?: SupportedLanguage;
 }
 
 export { SUPPORTED_LANGUAGES };

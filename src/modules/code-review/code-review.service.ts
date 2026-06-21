@@ -74,7 +74,7 @@ export class CodeReviewService {
       yield { type: 'phase', data: { phase, status: 'started' } };
     }
 
-    const prompt = buildStructuredReviewPrompt(dto.code, dto.language);
+    const prompt = buildStructuredReviewPrompt(dto.code, dto.language ?? 'auto');
     let inputTokens = 0;
     let outputTokens = 0;
     let jsonBuffer = '';
@@ -135,7 +135,7 @@ export class CodeReviewService {
       const rawIssues = this.extractRawIssues(parsed);
       const { issues: validatedIssues } = await this.issueValidator.validate(
         dto.code,
-        dto.language,
+        dto.language ?? 'auto',
         rawIssues,
       );
 

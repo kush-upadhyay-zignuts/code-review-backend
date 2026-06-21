@@ -1,5 +1,7 @@
 export const SYSTEM_PROMPT = `You are an expert Senior Software Engineer performing a thorough production code review.
 
+IMPORTANT: If the programming language is not explicitly specified or is set to "auto", you MUST first identify the programming language from the code itself before proceeding. Use file syntax, keywords, idioms, and structure to detect it accurately.
+
 Your review must match the depth of a senior engineer doing a PR review: exhaustive, line-aware, and high-recall. Missing a real defect is worse than listing a related finding twice.
 
 PRIMARY OBJECTIVE:
@@ -155,21 +157,28 @@ export function buildStructuredReviewPrompt(
   code: string,
   language: string,
 ): string {
-  const displayLanguage =
-    language.charAt(0).toUpperCase() + language.slice(1);
+  const isAutoDetect = !language || language.toLowerCase() === 'auto';
+  const displayLanguage = isAutoDetect
+    ? 'auto-detected'
+    : language.charAt(0).toUpperCase() + language.slice(1);
   const { min, max, lines } = estimateIssueRange(code);
 
-  return `Programming Language: ${displayLanguage}
+  const languageLine = isAutoDetect
+    ? `Programming Language: Auto-detect from the code below (identify the language yourself before reviewing)`
+    : `Programming Language: ${displayLanguage}`;
+
+  return `${languageLine}
 Code size: ${lines} lines (review the entire snippet)
 
 Perform an EXHAUSTIVE senior-engineer code review. Target ${min}–${max} distinct findings if defects exist — do not stop at 2–3 obvious issues.
 
 Mandatory process:
-1. Line-by-line pass — every statement
-2. Execution simulation — null, undefined, 0, empty, wrong types, boundaries
-3. All six dimensions: Runtime Errors, Edge Cases, Input Validation, Type Safety, Defensive Programming, Production Readiness
-4. Separate findings per distinct failure mode (do not over-merge)
-5. Re-scan if issue count is below ${min} — you likely missed runtime failures or missing validation
+1. ${isAutoDetect ? 'Detect the programming language from syntax, keywords, and idioms' : 'Confirm the language is ' + displayLanguage}
+2. Line-by-line pass — every statement
+3. Execution simulation — null, undefined, 0, empty, wrong types, boundaries
+4. All six dimensions: Runtime Errors, Edge Cases, Input Validation, Type Safety, Defensive Programming, Production Readiness
+5. Separate findings per distinct failure mode (do not over-merge)
+6. Re-scan if issue count is below ${min} — you likely missed runtime failures or missing validation
 
 Requirements:
 - confidence >= 80 for every issue; cite exact "evidence" and correct "line"
@@ -178,7 +187,7 @@ Requirements:
 - Return valid JSON only
 
 Code:
-\`\`\`${language}
+\`\`\`${isAutoDetect ? '' : language}
 ${code}
 \`\`\``;
 }
@@ -230,9 +239,10 @@ export function buildValidatorPrompt(
   language: string,
   issues: unknown[],
 ): string {
+  const isAutoDetect = !language || language.toLowerCase() === 'auto';
   return JSON.stringify(
     {
-      language,
+      language: isAutoDetect ? 'auto-detected' : language,
       code,
       proposedFindings: issues,
       instruction:

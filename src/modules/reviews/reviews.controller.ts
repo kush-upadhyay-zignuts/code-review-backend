@@ -96,7 +96,7 @@ export class ReviewsController {
     const startedAt = Date.now();
     const pending = await this.reviewsService.createPending(
       user.userId,
-      dto.language,
+      dto.language ?? 'auto',
       dto.code,
     );
 
