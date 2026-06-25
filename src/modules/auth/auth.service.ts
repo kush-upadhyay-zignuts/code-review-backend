@@ -17,6 +17,7 @@ import {
   LoginDto,
   RegisterDto,
   ResetPasswordDto,
+  ChangePasswordDto,
 } from './dto/auth.dto';
 import { UserRole } from '../../common/enums/role.enum';
 import { JwtPayload } from '../../common/interfaces/jwt-payload.interface';
@@ -118,6 +119,25 @@ export class AuthService {
     await user.save();
 
     return { message: 'Password reset successful. You can now sign in.' };
+  }
+
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    const user = await this.userModel.findById(userId);
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    const valid = await bcrypt.compare(dto.currentPassword, user.passwordHash);
+    if (!valid) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+
+    user.passwordHash = await bcrypt.hash(dto.newPassword, 12);
+    user.passwordResetToken = null;
+    user.passwordResetExpires = null;
+    await user.save();
+
+    return { message: 'Password changed successfully.' };
   }
 
   async findById(userId: string) {
