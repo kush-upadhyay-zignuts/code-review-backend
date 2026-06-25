@@ -1,1 +1,10 @@
-
+# Render Blueprint — set secrets in the Render dashboard (never commit real values).
+# Docs: https://render.com/docs/environment-variables
+#
+# Required for forgot-password on FREE tier:
+#   RESEND_API_KEY   — SMTP is blocked on free web services (ports 587/465)
+#   EMAIL_FROM       — verified sender in Resend (e.g. "CodeReview AI <onboarding@resend.dev>")
+#   FRONTEND_URL     — your Netlify URL (e.g. https://your-app.netlify.app)
+#   CORS_ORIGIN      — same as FRONTEND_URL
+#
+# Local development can use EMAIL_USER + EMAIL_PASS (Gmail SMTP) instead.

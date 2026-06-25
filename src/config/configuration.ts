@@ -46,6 +46,9 @@ export const emailConfig = registerAs('email', () => ({
   pass: process.env.EMAIL_PASS ?? '',
   host: process.env.EMAIL_HOST ?? 'smtp.gmail.com',
   port: parseInt(process.env.EMAIL_PORT ?? '587', 10),
+  /** HTTPS email API — use on Render free tier where SMTP ports are blocked */
+  resendApiKey: process.env.RESEND_API_KEY ?? '',
+  from: process.env.EMAIL_FROM ?? process.env.EMAIL_USER ?? '',
   frontendUrl:
     process.env.FRONTEND_URL ??
     process.env.CORS_ORIGIN ??
