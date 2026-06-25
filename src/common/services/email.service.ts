@@ -16,7 +16,7 @@ export class EmailService implements OnModuleInit {
 
     if (transport === 'none') {
       this.logger.warn(
-        'Password-reset email is disabled. Set EMAIL_USER+EMAIL_PASS (SMTP) or RESEND_API_KEY (HTTPS) in environment variables.',
+        'Password-reset email is disabled. Set EMAIL_USER+EMAIL_PASS (SMTP), or RESEND_API_KEY+EMAIL_FROM (optional HTTPS API).',
       );
       return;
     }
@@ -41,9 +41,14 @@ export class EmailService implements OnModuleInit {
     );
   }
 
-  private resolveTransport(): EmailTransport {
+  private isResendConfigured(): boolean {
     const resendKey = this.configService.get<string>('email.resendApiKey')?.trim();
-    if (resendKey) return 'resend';
+    const resendFrom = this.configService.get<string>('email.from')?.trim();
+    return Boolean(resendKey && resendFrom);
+  }
+
+  private resolveTransport(): EmailTransport {
+    if (this.isResendConfigured()) return 'resend';
 
     const user = this.configService.get<string>('email.user')?.trim();
     const pass = this.configService.get<string>('email.pass')?.trim();
@@ -79,15 +84,19 @@ export class EmailService implements OnModuleInit {
     subject: string,
     html: string,
     text: string,
-  ): Promise<boolean> {
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
     const apiKey = this.configService.get<string>('email.resendApiKey')?.trim();
-    const from =
-      this.configService.get<string>('email.from')?.trim() ||
-      this.configService.get<string>('email.user')?.trim();
+    const from = this.configService.get<string>('email.from')?.trim();
 
     if (!apiKey || !from) {
-      this.logger.warn('Resend API key or EMAIL_FROM is missing');
-      return false;
+      return {
+        ok: false,
+        message: 'Resend is not fully configured. Set RESEND_API_KEY and EMAIL_FROM, or use SMTP.',
+      };
+    }
+
+    if (from.includes('resend.dev') && !from.includes('onboarding@resend.dev')) {
+      this.logger.warn('Using resend.dev sender — only your Resend account email can receive mail until a domain is verified.');
     }
 
     try {
@@ -108,14 +117,24 @@ export class EmailService implements OnModuleInit {
 
       if (!response.ok) {
         const body = await response.text();
-        this.logger.error(`Resend API error (${response.status}): ${body}`);
-        return false;
+        let message = 'Failed to send password reset email';
+        try {
+          const parsed = JSON.parse(body) as { message?: string };
+          if (parsed.message) message = parsed.message;
+        } catch {
+          if (body) message = body;
+        }
+        this.logger.error(`Resend API error (${response.status}): ${message}`);
+        return { ok: false, message };
       }
 
-      return true;
+      return { ok: true };
     } catch (error) {
       this.logger.error('Resend API request failed', error);
-      return false;
+      return {
+        ok: false,
+        message: 'Email service is unreachable. Please try again later.',
+      };
     }
   }
 
@@ -124,12 +143,15 @@ export class EmailService implements OnModuleInit {
     subject: string,
     html: string,
     text: string,
-  ): Promise<boolean> {
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
     const transport = this.createSmtpTransport();
     const from = this.configService.get<string>('email.user')?.trim();
 
     if (!transport || !from) {
-      return false;
+      return {
+        ok: false,
+        message: 'Email is not configured. Set EMAIL_USER and EMAIL_PASS on the server.',
+      };
     }
 
     try {
@@ -140,14 +162,20 @@ export class EmailService implements OnModuleInit {
         html,
         text,
       });
-      return true;
+      return { ok: true };
     } catch (error) {
       this.logger.error('SMTP send failed', error);
-      return false;
+      return {
+        ok: false,
+        message: 'Failed to send email via SMTP. Check server email configuration.',
+      };
     }
   }
 
-  async sendPasswordResetEmail(to: string, resetUrl: string): Promise<boolean> {
+  async sendPasswordResetEmail(
+    to: string,
+    resetUrl: string,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
     const subject = 'Reset your password';
     const html = `
       <p>You requested a password reset for your CodeReview AI account.</p>
@@ -159,21 +187,21 @@ export class EmailService implements OnModuleInit {
     const transport = this.resolveTransport();
 
     if (transport === 'none') {
-      this.logger.warn(
-        'Email not configured. Set EMAIL_USER+EMAIL_PASS or RESEND_API_KEY in environment.',
-      );
-      return false;
+      const message =
+        'Email is not configured. Set EMAIL_USER+EMAIL_PASS (SMTP), or RESEND_API_KEY+EMAIL_FROM.';
+      this.logger.warn(message);
+      return { ok: false, message };
     }
 
-    const sent =
+    const result =
       transport === 'resend'
         ? await this.sendViaResend(to, subject, html, text)
         : await this.sendViaSmtp(to, subject, html, text);
 
-    if (sent) {
+    if (result.ok) {
       this.logger.log(`Password reset email sent to ${to}`);
     }
 
-    return sent;
+    return result;
   }
 }

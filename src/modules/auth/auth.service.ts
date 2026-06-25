@@ -3,6 +3,7 @@ import {
   UnauthorizedException,
   ConflictException,
   BadRequestException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
@@ -84,8 +85,14 @@ export class AuthService {
       );
       const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
 
-      // Fire-and-forget: token is already saved — don't block the response on SMTP
-      void this.emailService.sendPasswordResetEmail(user.email, resetUrl);
+      const result = await this.emailService.sendPasswordResetEmail(
+        user.email,
+        resetUrl,
+      );
+
+      if (!result.ok) {
+        throw new ServiceUnavailableException(result.message);
+      }
     }
 
     return {
