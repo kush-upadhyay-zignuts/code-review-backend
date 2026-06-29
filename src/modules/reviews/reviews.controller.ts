@@ -6,6 +6,7 @@ import {
   NotFoundException,
   Param,
   Post,
+  Query,
   Res,
   UseGuards,
 } from '@nestjs/common';
@@ -18,6 +19,7 @@ import { UsageService } from '../usage/usage.service';
 import { CodeReviewService } from '../code-review/code-review.service';
 import { CreateCodeReviewDto } from '../code-review/dto/create-code-review.dto';
 import { ReviewsService } from './reviews.service';
+import { ListReviewsQueryDto } from './dto/list-reviews-query.dto';
 import {
   CodeReviewIssue,
   CodeReviewSummary,
@@ -35,8 +37,12 @@ export class ReviewsController {
   ) {}
 
   @Get()
-  history(@CurrentUser() user: AuthUser) {
-    return this.reviewsService.findByUser(user.userId);
+  history(@CurrentUser() user: AuthUser, @Query() query: ListReviewsQueryDto) {
+    return this.reviewsService.findByUserPaginated(
+      user.userId,
+      query.page ?? 1,
+      query.limit ?? 10,
+    );
   }
 
   @Post('stream')

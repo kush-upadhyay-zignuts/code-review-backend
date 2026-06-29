@@ -47,6 +47,32 @@ export class ReviewsService {
     );
   }
 
+  async findByUserPaginated(userId: string, page = 1, limit = 10) {
+    const safePage = Math.max(1, page);
+    const safeLimit = Math.min(50, Math.max(1, limit));
+    const skip = (safePage - 1) * safeLimit;
+    const filter = { userId: new Types.ObjectId(userId) };
+
+    const [items, total] = await Promise.all([
+      this.reviewModel
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(safeLimit)
+        .select('-code')
+        .lean(),
+      this.reviewModel.countDocuments(filter),
+    ]);
+
+    return {
+      items,
+      total,
+      page: safePage,
+      limit: safeLimit,
+      totalPages: Math.max(1, Math.ceil(total / safeLimit)),
+    };
+  }
+
   findByUser(userId: string, limit = 20) {
     return this.reviewModel
       .find({ userId: new Types.ObjectId(userId) })
