@@ -1,10 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import OpenAI from 'openai';
 import {
   buildStructuredReviewPrompt,
   SYSTEM_PROMPT,
 } from './prompts/code-review.prompt';
+import { createAiClient, getAiModel } from './ai-openai-client';
 import { CreateCodeReviewDto } from './dto/create-code-review.dto';
 import {
   CodeReviewIssue,
@@ -35,30 +35,17 @@ export class CodeReviewService {
     private readonly configService: ConfigService,
     private readonly issueValidator: IssueValidatorService,
   ) {
-    this.model =
-      this.configService.get<string>('ai.model')?.trim() || 'gpt-4o-mini';
+    this.model = getAiModel(this.configService);
     this.maxOutputTokens = this.configService.get<number>(
       'ai.maxOutputTokens',
       4096,
     );
   }
 
-  private getOpenAiClient(): OpenAI | null {
-    const apiKey = this.configService.get<string>('ai.apiKey')?.trim();
-    if (!apiKey || apiKey.includes('your_openai_api_key')) {
-      return null;
-    }
-
-    return new OpenAI({
-      apiKey,
-      baseURL: this.configService.get<string>('ai.baseUrl'),
-    });
-  }
-
   async *reviewStream(
     dto: CreateCodeReviewDto,
   ): AsyncGenerator<StreamEvent, TokenUsageResult> {
-    const openai = this.getOpenAiClient();
+    const openai = createAiClient(this.configService);
     if (!openai) {
       yield {
         type: 'error',

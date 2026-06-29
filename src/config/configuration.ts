@@ -23,14 +23,30 @@ export const redisConfig = registerAs('redis', () => ({
   url: process.env.REDIS_URL ?? '',
 }));
 
-export const aiConfig = registerAs('ai', () => ({
-  apiKey: process.env.AI_API_KEY ?? '',
-  baseUrl: process.env.AI_BASE_URL ?? 'https://api.openai.com/v1',
-  model: process.env.AI_MODEL ?? 'gpt-4o-mini',
-  maxOutputTokens: parseInt(process.env.AI_MAX_OUTPUT_TOKENS ?? '8192', 10),
-  validatorEnabled: process.env.AI_VALIDATOR_ENABLED ?? 'true',
-  minConfidence: parseInt(process.env.AI_MIN_CONFIDENCE ?? '80', 10),
-}));
+export const aiConfig = registerAs('ai', () => {
+  const baseUrl =
+    process.env.AI_BASE_URL?.trim() || 'https://openrouter.ai/api/v1';
+
+  const rawModel = process.env.AI_MODEL?.trim() || 'openai/gpt-oss-20b:free';
+  const model =
+    baseUrl.includes('openrouter.ai') && !rawModel.includes('/')
+      ? `openai/${rawModel}`
+      : rawModel;
+
+  return {
+    apiKey: process.env.AI_API_KEY ?? '',
+    baseUrl,
+    model,
+    maxOutputTokens: parseInt(process.env.AI_MAX_OUTPUT_TOKENS ?? '8192', 10),
+    validatorEnabled: process.env.AI_VALIDATOR_ENABLED ?? 'true',
+    minConfidence: parseInt(process.env.AI_MIN_CONFIDENCE ?? '80', 10),
+    appUrl:
+      process.env.AI_APP_URL ??
+      process.env.FRONTEND_URL ??
+      'http://localhost:3000',
+    appName: process.env.AI_APP_NAME ?? 'CodeReview AI',
+  };
+});
 
 export const usageConfig = registerAs('usage', () => ({
   rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX ?? '10', 10),

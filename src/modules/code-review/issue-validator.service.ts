@@ -1,10 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import OpenAI from 'openai';
 import {
   VALIDATOR_SYSTEM_PROMPT,
   buildValidatorPrompt,
 } from './prompts/code-review.prompt';
+import { createAiClient, getAiModel } from './ai-openai-client';
 import { CodeReviewIssue } from './interfaces/code-review.interface';
 import { processIssues } from './issue-processor';
 
@@ -16,22 +16,11 @@ export class IssueValidatorService {
   private readonly minConfidence: number;
 
   constructor(private readonly configService: ConfigService) {
-    this.model =
-      this.configService.get<string>('ai.model')?.trim() || 'gpt-4o-mini';
+    this.model = getAiModel(this.configService);
     this.enabled =
       this.configService.get<string>('ai.validatorEnabled', 'true') === 'true';
     this.minConfidence =
       this.configService.get<number>('ai.minConfidence') ?? 80;
-  }
-
-  private getOpenAiClient(): OpenAI | null {
-    const apiKey = this.configService.get<string>('ai.apiKey')?.trim();
-    if (!apiKey || apiKey.includes('your_openai_api_key')) return null;
-
-    return new OpenAI({
-      apiKey,
-      baseURL: this.configService.get<string>('ai.baseUrl'),
-    });
   }
 
   async validate(
@@ -48,7 +37,7 @@ export class IssueValidatorService {
       return { issues: preFiltered, rejectedCount: 0 };
     }
 
-    const openai = this.getOpenAiClient();
+    const openai = createAiClient(this.configService);
     if (!openai) {
       return { issues: preFiltered, rejectedCount: 0 };
     }
