@@ -8,8 +8,8 @@ const PLACEHOLDER_LANGUAGES = new Set([
 
 const LANGUAGE_RULES: { lang: string; test: RegExp }[] = [
   { lang: 'Python', test: /^\s*def \w+\(|^\s*import \w+|^\s*from \w+ import/m },
+  { lang: 'TypeScript', test: /\bexport type \w+|\binterface \w+|\btype \w+\s*=|:\s*(string|number|boolean|void|FC)\b/ },
   { lang: 'JavaScript', test: /\bimport\s+React\b|\buseState\s*\(|\buseEffect\s*\(/ },
-  { lang: 'TypeScript', test: /\binterface \w+|\btype \w+\s*=|:\s*(string|number|boolean|void)\b/ },
   { lang: 'JavaScript', test: /\b(const|let|var)\s+\w+\s*=|function\s+\w+|\b=>\b/ },
   { lang: 'Java', test: /\bpublic\s+(class|static)\b|\bSystem\.out\.println/ },
   { lang: 'Kotlin', test: /\bfun\s+\w+\(|\bval\s+\w+/ },
@@ -71,11 +71,8 @@ export function resolveMaxOutputTokens(
   if (lines <= 80) {
     return Math.max(configuredMax, 6144);
   }
-  if (lines <= 150) {
+  if (lines <= 200) {
     return Math.max(configuredMax, 8192);
-  }
-  if (lines <= 300) {
-    return Math.max(configuredMax, 12_288);
   }
 
   return Math.max(configuredMax, 16_384);

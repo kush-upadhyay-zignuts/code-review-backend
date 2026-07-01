@@ -13,6 +13,10 @@ import {
 import { normalizeReviewIssue } from './issue-normalizer';
 import { processIssues } from './issue-processor';
 import {
+  salvageIssuesFromBuffer,
+  salvageSummaryFromBuffer,
+} from './json-salvage';
+import {
   CodeReviewIssue,
   CodeReviewMetrics,
   CodeReviewSummary,
@@ -102,13 +106,34 @@ export class CodeReviewService {
         data: { phase: 'validating_findings', status: 'started' },
       };
 
-      const parsed = this.tryParseJsonObject(jsonBuffer.trim());
+      let parsed = this.tryParseJsonObject(jsonBuffer.trim());
+      const truncated = outputTokens >= Math.floor(outputTokenLimit * 0.92);
+
+      let rawIssues = parsed ? this.extractRawIssues(parsed) : [];
+      if (rawIssues.length === 0) {
+        rawIssues = salvageIssuesFromBuffer(jsonBuffer);
+        if (rawIssues.length > 0) {
+          this.logger.warn(
+            `Salvaged ${rawIssues.length} issues from truncated AI response`,
+          );
+        }
+      }
+
+      if (!parsed && rawIssues.length > 0) {
+        parsed = {
+          summary: salvageSummaryFromBuffer(jsonBuffer),
+          issues: [],
+          metrics: {},
+        };
+      }
+
       if (!parsed) {
         yield {
           type: 'error',
           data: {
-            message:
-              'Failed to parse AI review response as JSON. Try again or use a shorter code snippet.',
+            message: truncated
+              ? 'AI response was cut off before findings could be returned. Shorten the code or retry.'
+              : 'Failed to parse AI review response as JSON. Try again or use a shorter code snippet.',
           },
         };
         yield {
@@ -122,27 +147,35 @@ export class CodeReviewService {
         };
       }
 
-      const rawIssues = this.extractRawIssues(parsed);
-      this.logger.log(`Parsed ${rawIssues.length} raw issues from AI response`);
+      this.logger.log(
+        `Parsed ${rawIssues.length} raw issues (truncated=${truncated}, out=${outputTokens}/${outputTokenLimit})`,
+      );
 
       const detectedLanguage = normalizeDetectedLanguage(
         this.readString(parsed.language),
         dto.code,
       );
 
-      let validatedIssues = (
-        await this.issueValidator.validate(
-          dto.code,
-          detectedLanguage ?? dto.language ?? 'auto',
-          rawIssues,
-        )
-      ).issues;
+      let validatedIssues: CodeReviewIssue[];
 
-      if (rawIssues.length > 0 && validatedIssues.length === 0) {
-        this.logger.warn(
-          'Validator returned 0 issues — falling back to AI findings',
-        );
+      if (truncated || rawIssues.length >= 10) {
+        this.logger.warn('Skipping LLM validator — using AI findings directly');
         validatedIssues = processIssues(rawIssues, this.minConfidence);
+      } else {
+        validatedIssues = (
+          await this.issueValidator.validate(
+            dto.code,
+            detectedLanguage ?? dto.language ?? 'auto',
+            rawIssues,
+          )
+        ).issues;
+
+        if (rawIssues.length > 0 && validatedIssues.length === 0) {
+          this.logger.warn(
+            'Validator returned 0 issues — falling back to AI findings',
+          );
+          validatedIssues = processIssues(rawIssues, this.minConfidence);
+        }
       }
 
       yield {

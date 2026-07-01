@@ -151,10 +151,10 @@ function estimateIssueRange(code: string): { min: number; max: number; lines: nu
   }).length;
 
   if (loc <= 20) return { min: 2, max: 5, lines };
-  if (loc <= 80) return { min: 4, max: 8, lines };
-  if (loc <= 150) return { min: 6, max: 12, lines };
-  if (loc <= 300) return { min: 8, max: 15, lines };
-  return { min: 6, max: 12, lines };
+  if (loc <= 80) return { min: 3, max: 6, lines };
+  if (loc <= 150) return { min: 4, max: 8, lines };
+  if (loc <= 300) return { min: 5, max: 8, lines };
+  return { min: 4, max: 8, lines };
 }
 
 export function buildStructuredReviewPrompt(
@@ -172,14 +172,14 @@ export function buildStructuredReviewPrompt(
     : `Programming Language: ${displayLanguage}`;
 
   const longCodeGuidance =
-    lines > 100
-      ? `\nLarge snippet (${lines} lines): keep each explanation to 1-2 sentences, evidence concise, and prioritize critical/high severity defects so the JSON response stays complete.`
+    lines > 80
+      ? `\nSnippet is ${lines} lines — return AT MOST ${max} issues. Keep each explanation under 100 characters and evidence under 60 characters (shortest exact substring). Prioritize critical/high severity so the JSON finishes completely.`
       : '';
 
   return `${languageLine}
 Code size: ${lines} lines (review the entire snippet)${longCodeGuidance}
 
-Perform an EXHAUSTIVE senior-engineer code review. Target ${min}–${max} distinct findings if defects exist — do not stop at 2–3 obvious issues.
+Perform a senior-engineer code review. Target ${min}–${max} distinct findings if defects exist.
 
 Mandatory process:
 1. ${isAutoDetect ? 'Detect the programming language from syntax, keywords, and idioms' : 'Confirm the language is ' + displayLanguage}
@@ -192,7 +192,7 @@ Mandatory process:
 Requirements:
 - confidence >= 80 for every issue; cite exact "evidence" and correct "line"
 - Prefer specific categories ("Runtime Error", "Edge Case", etc.)
-- Report missing runtime failures and unvalidated parameters explicitly
+- NEVER exceed ${max} issues — quality over quantity; finish valid JSON
 - Return valid JSON only
 
 Code:
