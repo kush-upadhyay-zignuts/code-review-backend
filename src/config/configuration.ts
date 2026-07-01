@@ -37,8 +37,8 @@ export const aiConfig = registerAs('ai', () => {
     apiKey: process.env.AI_API_KEY ?? '',
     baseUrl,
     model,
-    maxOutputTokens: parseInt(process.env.AI_MAX_OUTPUT_TOKENS ?? '8192', 10),
-    validatorEnabled: process.env.AI_VALIDATOR_ENABLED ?? 'true',
+    maxOutputTokens: parseInt(process.env.AI_MAX_OUTPUT_TOKENS ?? '16384', 10),
+    validatorEnabled: process.env.AI_VALIDATOR_ENABLED ?? 'false',
     minConfidence: parseInt(process.env.AI_MIN_CONFIDENCE ?? '80', 10),
     appUrl:
       process.env.AI_APP_URL ??

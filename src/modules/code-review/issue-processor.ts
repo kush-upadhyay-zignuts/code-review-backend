@@ -9,7 +9,6 @@ export function filterByConfidence(
   return issues.filter((issue) => issue.confidence >= minConfidence);
 }
 
-/** Merge only exact duplicates: same line, category, and normalized title. */
 export function deduplicateIssues(issues: CodeReviewIssue[]): CodeReviewIssue[] {
   const seen = new Map<string, CodeReviewIssue>();
 
@@ -33,4 +32,11 @@ export function processIssues(
   minConfidence = DEFAULT_MIN_CONFIDENCE,
 ): CodeReviewIssue[] {
   return deduplicateIssues(filterByConfidence(issues, minConfidence));
+}
+
+export function mergeReviewIssues(
+  primary: CodeReviewIssue[],
+  secondary: CodeReviewIssue[],
+): CodeReviewIssue[] {
+  return deduplicateIssues([...primary, ...secondary]);
 }

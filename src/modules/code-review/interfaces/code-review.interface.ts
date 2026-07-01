@@ -40,7 +40,9 @@ export interface StreamEvent {
     | 'token'
     | 'error'
     | 'done'
-    | 'text';
+    | 'text'
+    | 'notice'
+    | 'ping';
   data: Record<string, unknown>;
 }
 
@@ -48,6 +50,13 @@ export interface TokenUsageResult {
   inputTokens: number;
   outputTokens: number;
   tokensUsed: number;
+}
+
+export interface ReviewTokenBudget {
+  lines: number;
+  loc: number;
+  maxIssues: number;
+  maxOutputTokens: number;
 }
 
 export interface ParsedReviewResponse {

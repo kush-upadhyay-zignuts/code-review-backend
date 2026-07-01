@@ -47,6 +47,32 @@ function normalizeSeverity(value: unknown): CodeReviewIssue['severity'] {
   return 'medium';
 }
 
+function truncateText(value: string, max: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max - 1)}…`;
+}
+
+export function compactReviewIssue(issue: CodeReviewIssue): CodeReviewIssue {
+  const explanation = truncateText(issue.explanation || issue.message, 120);
+  const title = truncateText(issue.title || explanation, 80);
+  const evidence = truncateText(issue.evidence, 80);
+  const suggestedFix =
+    issue.severity === 'low'
+      ? ''
+      : truncateText(issue.suggestedFix || issue.suggestion, 120);
+
+  return {
+    ...issue,
+    title,
+    explanation,
+    message: explanation,
+    evidence,
+    suggestedFix,
+    suggestion: suggestedFix,
+  };
+}
+
 export function normalizeReviewIssue(
   parsed: Record<string, unknown>,
 ): CodeReviewIssue | null {
@@ -70,7 +96,7 @@ export function normalizeReviewIssue(
   const suggestedFix =
     readString(parsed.suggestedFix) || readString(parsed.suggestion);
 
-  return {
+  return compactReviewIssue({
     title: title || 'Code issue',
     category: safeCategory,
     type: safeCategory,
@@ -82,5 +108,5 @@ export function normalizeReviewIssue(
     suggestedFix,
     suggestion: suggestedFix,
     confidence: parseConfidence(parsed.confidence),
-  };
+  });
 }

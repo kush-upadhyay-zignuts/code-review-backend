@@ -5,7 +5,6 @@ import {
   buildValidatorPrompt,
 } from './prompts/code-review.prompt';
 import { createAiClient, getAiModel, isOpenRouter } from './ai-openai-client';
-import { countCodeLines } from './language-utils';
 import { normalizeReviewIssue } from './issue-normalizer';
 import { CodeReviewIssue } from './interfaces/code-review.interface';
 import { processIssues } from './issue-processor';
@@ -20,7 +19,7 @@ export class IssueValidatorService {
   constructor(private readonly configService: ConfigService) {
     this.model = getAiModel(this.configService);
     this.enabled =
-      this.configService.get<string>('ai.validatorEnabled', 'true') === 'true';
+      this.configService.get<string>('ai.validatorEnabled', 'false') === 'true';
     this.minConfidence =
       this.configService.get<number>('ai.minConfidence') ?? 80;
   }
@@ -44,8 +43,7 @@ export class IssueValidatorService {
       return { issues: preFiltered, rejectedCount: 0 };
     }
 
-    const lines = countCodeLines(code);
-    const maxValidatorIssues = lines > 120 ? 20 : 30;
+    const maxValidatorIssues = Math.min(issues.length, 5);
     const issuesForValidation = preFiltered.slice(0, maxValidatorIssues);
     const remainderIssues = preFiltered.slice(maxValidatorIssues);
 
@@ -53,7 +51,7 @@ export class IssueValidatorService {
       const baseParams = {
         model: this.model,
         temperature: 0,
-        max_tokens: lines > 120 ? 6144 : 4096,
+        max_tokens: 1024,
         messages: [
           { role: 'system' as const, content: VALIDATOR_SYSTEM_PROMPT },
           {

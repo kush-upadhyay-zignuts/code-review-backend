@@ -7,14 +7,17 @@ import {
 import { createAiClient, getAiModel, isOpenRouter } from './ai-openai-client';
 import { CreateCodeReviewDto } from './dto/create-code-review.dto';
 import {
+  countCodeLines,
   normalizeDetectedLanguage,
-  resolveMaxOutputTokens,
 } from './language-utils';
-import { normalizeReviewIssue } from './issue-normalizer';
-import { processIssues } from './issue-processor';
+import { getReviewTokenBudget } from './review-budget';
+import { normalizeReviewIssue, compactReviewIssue } from './issue-normalizer';
+import { mergeReviewIssues, processIssues } from './issue-processor';
 import {
   salvageIssuesFromBuffer,
   salvageSummaryFromBuffer,
+  salvageMetricsFromBuffer,
+  salvageLanguageFromBuffer,
 } from './json-salvage';
 import {
   CodeReviewIssue,
@@ -34,7 +37,12 @@ const PHASES = [
   'validating_findings',
 ] as const;
 
-const ISSUE_STREAM_DELAY_MS = 200;
+const SEVERITY_RANK: Record<CodeReviewIssue['severity'], number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
 
 @Injectable()
 export class CodeReviewService {
@@ -42,6 +50,7 @@ export class CodeReviewService {
   private readonly model: string;
   private readonly maxOutputTokens: number;
   private readonly minConfidence: number;
+  private readonly validatorEnabled: boolean;
 
   constructor(
     private readonly configService: ConfigService,
@@ -50,10 +59,12 @@ export class CodeReviewService {
     this.model = getAiModel(this.configService);
     this.maxOutputTokens = this.configService.get<number>(
       'ai.maxOutputTokens',
-      8192,
+      20_384,
     );
     this.minConfidence =
       this.configService.get<number>('ai.minConfidence') ?? 80;
+    this.validatorEnabled =
+      this.configService.get<string>('ai.validatorEnabled', 'false') === 'true';
   }
 
   async *reviewStream(
@@ -71,18 +82,31 @@ export class CodeReviewService {
       return { inputTokens: 0, outputTokens: 0, tokensUsed: 0 };
     }
 
+    const budget = getReviewTokenBudget(dto.code, this.maxOutputTokens);
+    const prompt = buildStructuredReviewPrompt(
+      dto.code,
+      dto.language ?? 'auto',
+      budget,
+    );
+
+    this.logger.log(
+      `Review budget: maxOut=${budget.maxOutputTokens} maxIssues=${budget.maxIssues} loc=${budget.loc}`,
+    );
+
     for (const phase of PHASES.slice(0, 4)) {
       yield { type: 'phase', data: { phase, status: 'started' } };
     }
 
-    const prompt = buildStructuredReviewPrompt(dto.code, dto.language ?? 'auto');
-    const outputTokenLimit = resolveMaxOutputTokens(dto.code, this.maxOutputTokens);
     let inputTokens = 0;
     let outputTokens = 0;
     let jsonBuffer = '';
 
     try {
-      const stream = await this.createReviewStream(openai, prompt, outputTokenLimit);
+      const stream = await this.createReviewStream(
+        openai,
+        prompt,
+        budget.maxOutputTokens,
+      );
 
       for await (const chunk of stream) {
         if (chunk.usage) {
@@ -93,7 +117,6 @@ export class CodeReviewService {
         const content = chunk.choices[0]?.delta?.content ?? '';
         if (!content) continue;
 
-        yield { type: 'text', data: { content } };
         jsonBuffer += content;
       }
 
@@ -106,34 +129,20 @@ export class CodeReviewService {
         data: { phase: 'validating_findings', status: 'started' },
       };
 
-      let parsed = this.tryParseJsonObject(jsonBuffer.trim());
-      const truncated = outputTokens >= Math.floor(outputTokenLimit * 0.92);
+      const truncated =
+        outputTokens >= Math.floor(budget.maxOutputTokens * 0.92);
+      const parsedResult = this.parseReviewResponse(
+        jsonBuffer,
+        truncated,
+        dto.code,
+      );
 
-      let rawIssues = parsed ? this.extractRawIssues(parsed) : [];
-      if (rawIssues.length === 0) {
-        rawIssues = salvageIssuesFromBuffer(jsonBuffer);
-        if (rawIssues.length > 0) {
-          this.logger.warn(
-            `Salvaged ${rawIssues.length} issues from truncated AI response`,
-          );
-        }
-      }
-
-      if (!parsed && rawIssues.length > 0) {
-        parsed = {
-          summary: salvageSummaryFromBuffer(jsonBuffer),
-          issues: [],
-          metrics: {},
-        };
-      }
-
-      if (!parsed) {
+      if (parsedResult.rawIssues.length === 0) {
         yield {
           type: 'error',
           data: {
-            message: truncated
-              ? 'AI response was cut off before findings could be returned. Shorten the code or retry.'
-              : 'Failed to parse AI review response as JSON. Try again or use a shorter code snippet.',
+            message:
+              'Could not extract findings from the AI response. Please try again.',
           },
         };
         yield {
@@ -147,21 +156,23 @@ export class CodeReviewService {
         };
       }
 
-      this.logger.log(
-        `Parsed ${rawIssues.length} raw issues (truncated=${truncated}, out=${outputTokens}/${outputTokenLimit})`,
-      );
+      const { parsed, rawIssues, detectedLanguage } = parsedResult;
 
-      const detectedLanguage = normalizeDetectedLanguage(
-        this.readString(parsed.language),
-        dto.code,
+      this.logger.log(
+        `Parsed ${rawIssues.length} issues (truncated=${truncated}, out=${outputTokens}/${budget.maxOutputTokens})`,
       );
 
       let validatedIssues: CodeReviewIssue[];
 
-      if (truncated || rawIssues.length >= 10) {
-        this.logger.warn('Skipping LLM validator — using AI findings directly');
-        validatedIssues = processIssues(rawIssues, this.minConfidence);
-      } else {
+      const lines = countCodeLines(dto.code);
+      const useLlmValidator =
+        this.validatorEnabled &&
+        !truncated &&
+        rawIssues.length > 0 &&
+        rawIssues.length <= 3 &&
+        lines <= 60;
+
+      if (useLlmValidator) {
         validatedIssues = (
           await this.issueValidator.validate(
             dto.code,
@@ -169,14 +180,20 @@ export class CodeReviewService {
             rawIssues,
           )
         ).issues;
-
-        if (rawIssues.length > 0 && validatedIssues.length === 0) {
-          this.logger.warn(
-            'Validator returned 0 issues — falling back to AI findings',
-          );
-          validatedIssues = processIssues(rawIssues, this.minConfidence);
-        }
+      } else {
+        validatedIssues = processIssues(rawIssues, this.minConfidence);
       }
+
+      if (validatedIssues.length === 0) {
+        this.logger.warn(
+          'No issues after validation — falling back to AI findings',
+        );
+        validatedIssues = processIssues(rawIssues, this.minConfidence);
+      }
+
+      validatedIssues = this.sortIssuesBySeverity(
+        validatedIssues.map(compactReviewIssue),
+      );
 
       yield {
         type: 'phase',
@@ -190,10 +207,25 @@ export class CodeReviewService {
           type: 'issue',
           data: issue as unknown as Record<string, unknown>,
         };
-        await this.delay(ISSUE_STREAM_DELAY_MS);
       }
 
-      const summary = this.buildSummary(parsed, dto.code, detectedLanguage);
+      if (truncated && validatedIssues.length > 0) {
+        yield {
+          type: 'notice',
+          data: {
+            code: 'output_truncated',
+            message: `Output limit reached. Showing ${validatedIssues.length} finding${validatedIssues.length === 1 ? '' : 's'} received before the response was cut off.`,
+          },
+        };
+      }
+
+      const summary = this.buildSummary(
+        parsed,
+        dto.code,
+        detectedLanguage,
+        truncated,
+        validatedIssues.length,
+      );
       if (summary) {
         yield {
           type: 'summary',
@@ -225,6 +257,57 @@ export class CodeReviewService {
     }
   }
 
+  private parseReviewResponse(
+    jsonBuffer: string,
+    truncated: boolean,
+    code: string,
+  ): {
+    parsed: Record<string, unknown>;
+    rawIssues: CodeReviewIssue[];
+    detectedLanguage?: string;
+  } {
+    let parsed = this.tryParseJsonObject(jsonBuffer.trim());
+    const fromParsed = parsed ? this.extractRawIssues(parsed) : [];
+    const salvaged = salvageIssuesFromBuffer(jsonBuffer);
+
+    if (salvaged.length > 0 && truncated) {
+      this.logger.warn(
+        `Salvaged ${salvaged.length} issues from truncated AI response`,
+      );
+    }
+
+    const rawIssues = this.sortIssuesBySeverity(
+      mergeReviewIssues(fromParsed, salvaged),
+    );
+
+    if (!parsed) {
+      parsed = {
+        summary:
+          salvageSummaryFromBuffer(jsonBuffer) ||
+          (truncated && rawIssues.length > 0
+            ? `Partial review — ${rawIssues.length} findings extracted before output limit.`
+            : ''),
+        language: salvageLanguageFromBuffer(jsonBuffer),
+        issues: [],
+        metrics: salvageMetricsFromBuffer(jsonBuffer),
+      };
+    }
+
+    const detectedLanguage = normalizeDetectedLanguage(
+      this.readString(parsed.language) || salvageLanguageFromBuffer(jsonBuffer),
+      code,
+    );
+
+    return { parsed, rawIssues, detectedLanguage };
+  }
+
+  private sortIssuesBySeverity(issues: CodeReviewIssue[]): CodeReviewIssue[] {
+    return [...issues].sort(
+      (a, b) =>
+        (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9),
+    );
+  }
+
   private async createReviewStream(
     openai: OpenAI,
     prompt: string,
@@ -239,7 +322,7 @@ export class CodeReviewService {
       stream: true as const,
       stream_options: { include_usage: true },
       max_tokens: maxTokens,
-      temperature: 0.1,
+      temperature: 0.05,
     };
 
     try {
@@ -276,8 +359,15 @@ export class CodeReviewService {
     parsed: Record<string, unknown>,
     code: string,
     detectedLanguage?: string,
+    truncated = false,
+    issueCount = 0,
   ): CodeReviewSummary | null {
-    const summaryText = this.readString(parsed.summary);
+    let summaryText = this.readString(parsed.summary).slice(0, 280);
+    if (!summaryText && issueCount > 0) {
+      summaryText = truncated
+        ? `Partial review completed with ${issueCount} confirmed finding${issueCount === 1 ? '' : 's'}.`
+        : `Review completed with ${issueCount} confirmed finding${issueCount === 1 ? '' : 's'}.`;
+    }
     if (!summaryText) return null;
 
     const metrics = this.parseMetrics(parsed.metrics);
@@ -359,9 +449,5 @@ export class CodeReviewService {
 
   private readString(value: unknown): string {
     return typeof value === 'string' ? value : '';
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

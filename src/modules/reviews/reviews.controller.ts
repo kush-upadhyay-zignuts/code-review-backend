@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -16,6 +17,7 @@ import { TokenBudgetGuard } from '../../common/guards/token-budget.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthUser } from '../../common/decorators/current-user.decorator';
 import { UsageService } from '../usage/usage.service';
+import { validateCodeInput } from '../code-review/code-input-validator';
 import { CodeReviewService } from '../code-review/code-review.service';
 import { CreateCodeReviewDto } from '../code-review/dto/create-code-review.dto';
 import { ReviewsService } from './reviews.service';
@@ -94,11 +96,20 @@ export class ReviewsController {
     return this.executeStream(dto, user, res);
   }
 
+  private assertValidCodeInput(code: string): void {
+    const validation = validateCodeInput(code);
+    if (!validation.valid) {
+      throw new BadRequestException(validation.error);
+    }
+  }
+
   private async executeStream(
     dto: CreateCodeReviewDto,
     user: AuthUser,
     res: Response,
   ): Promise<void> {
+    this.assertValidCodeInput(dto.code);
+
     const startedAt = Date.now();
     const pending = await this.reviewsService.createPending(
       user.userId,
@@ -122,6 +133,11 @@ export class ReviewsController {
 
     const issues: CodeReviewIssue[] = [];
     let summary: CodeReviewSummary | null = null;
+    let hadStreamError = false;
+
+    const heartbeat = setInterval(() => {
+      writeEvent('ping', { ts: Date.now() });
+    }, 15_000);
 
     try {
       writeEvent('review', { reviewId: pending._id.toString() });
@@ -131,6 +147,9 @@ export class ReviewsController {
 
       while (!result.done) {
         const event = result.value;
+        if (event.type === 'error') {
+          hadStreamError = true;
+        }
         if (event.type === 'issue') {
           issues.push(event.data as unknown as CodeReviewIssue);
         }
@@ -146,6 +165,26 @@ export class ReviewsController {
         outputTokens: 0,
         tokensUsed: 0,
       };
+
+      const completedSuccessfully =
+        !hadStreamError &&
+        (usage.tokensUsed > 0 || issues.length > 0 || summary !== null);
+
+      if (!completedSuccessfully) {
+        await this.reviewsService.deleteForUser(
+          pending._id.toString(),
+          user.userId,
+        );
+
+        if (!hadStreamError) {
+          writeEvent('error', {
+            message:
+              'Review did not complete. The connection may have timed out — please try again.',
+          });
+        }
+
+        return;
+      }
 
       if (usage.tokensUsed > 0) {
         await this.usageService.recordTokenUsage(
@@ -206,10 +245,16 @@ export class ReviewsController {
 
       writeEvent('done', { reviewId: pending._id.toString() });
     } catch (error) {
+      hadStreamError = true;
+      await this.reviewsService
+        .deleteForUser(pending._id.toString(), user.userId)
+        .catch(() => undefined);
+
       writeEvent('error', {
         message: error instanceof Error ? error.message : 'Stream failed',
       });
     } finally {
+      clearInterval(heartbeat);
       res.end();
     }
   }

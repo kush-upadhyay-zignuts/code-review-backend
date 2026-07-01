@@ -27,8 +27,9 @@ function getReviewPayload(request: Request): {
 function estimateTokens(code: string): number {
   const lines = code.split('\n').length;
   const inputEstimate = Math.ceil(code.length / 4);
-  const outputEstimate = lines <= 80 ? 3000 : lines <= 150 ? 7000 : 12_000;
-  return inputEstimate + outputEstimate + 800;
+  const outputEstimate =
+    lines <= 40 ? 1_200 : lines <= 100 ? 1_800 : lines <= 200 ? 2_500 : 3_500;
+  return inputEstimate + outputEstimate + 400;
 }
 
 @Injectable()

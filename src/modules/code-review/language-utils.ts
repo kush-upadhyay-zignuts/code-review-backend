@@ -61,19 +61,3 @@ export function normalizeDetectedLanguage(
 export function countCodeLines(code: string): number {
   return code.split('\n').length;
 }
-
-export function resolveMaxOutputTokens(
-  code: string,
-  configuredMax: number,
-): number {
-  const lines = countCodeLines(code);
-
-  if (lines <= 80) {
-    return Math.max(configuredMax, 6144);
-  }
-  if (lines <= 200) {
-    return Math.max(configuredMax, 8192);
-  }
-
-  return Math.max(configuredMax, 16_384);
-}
