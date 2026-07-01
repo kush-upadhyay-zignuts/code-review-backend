@@ -253,11 +253,39 @@ export class CodeReviewService {
 
   private tryParseJsonObject(text: string): Record<string, unknown> | null {
     try {
-      const cleaned = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '');
+      const cleaned = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
       return JSON.parse(cleaned) as Record<string, unknown>;
     } catch {
-      return null;
+      return this.repairJson(text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim());
     }
+  }
+
+  private repairJson(text: string): Record<string, unknown> | null {
+    let lastBrace = text.lastIndexOf('}');
+    let attempts = 0;
+    while (lastBrace !== -1 && attempts < 10) {
+      const truncated = text.substring(0, lastBrace + 1);
+      const options = [
+        truncated,
+        truncated + ']}',
+        truncated + '}',
+        truncated + '}]}',
+      ];
+
+      for (const opt of options) {
+        try {
+          const parsed = JSON.parse(opt);
+          if (parsed && typeof parsed === 'object' && Array.isArray(parsed.issues)) {
+            return parsed as Record<string, unknown>;
+          }
+        } catch {
+          // ignore
+        }
+      }
+      lastBrace = text.lastIndexOf('}', lastBrace - 1);
+      attempts++;
+    }
+    return null;
   }
 
   private readString(value: unknown): string {

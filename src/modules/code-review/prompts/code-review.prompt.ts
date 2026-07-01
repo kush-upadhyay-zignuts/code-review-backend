@@ -148,9 +148,9 @@ function estimateIssueRange(code: string): { min: number; max: number; lines: nu
     return t.length > 0 && !t.startsWith('//') && !t.startsWith('#') && !t.startsWith('*');
   }).length;
 
-  if (loc <= 20) return { min: 5, max: 12, lines };
-  if (loc <= 80) return { min: 10, max: 20, lines };
-  return { min: 15, max: 30, lines };
+  if (loc <= 20) return { min: 2, max: 5, lines };
+  if (loc <= 80) return { min: 4, max: 8, lines };
+  return { min: 6, max: 12, lines };
 }
 
 export function buildStructuredReviewPrompt(
