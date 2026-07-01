@@ -187,6 +187,7 @@ export class ReviewsController {
           totalTokens: usage.tokensUsed,
           responseTimeMs: Date.now() - startedAt,
         },
+        summary?.language,
       );
 
       const monthlyUsed = await this.usageService.getMonthlyTokenUsage(

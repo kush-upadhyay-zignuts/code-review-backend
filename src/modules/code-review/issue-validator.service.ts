@@ -4,7 +4,9 @@ import {
   VALIDATOR_SYSTEM_PROMPT,
   buildValidatorPrompt,
 } from './prompts/code-review.prompt';
-import { createAiClient, getAiModel } from './ai-openai-client';
+import { createAiClient, getAiModel, isOpenRouter } from './ai-openai-client';
+import { countCodeLines } from './language-utils';
+import { normalizeReviewIssue } from './issue-normalizer';
 import { CodeReviewIssue } from './interfaces/code-review.interface';
 import { processIssues } from './issue-processor';
 
@@ -42,19 +44,37 @@ export class IssueValidatorService {
       return { issues: preFiltered, rejectedCount: 0 };
     }
 
+    const lines = countCodeLines(code);
+    const maxValidatorIssues = lines > 120 ? 20 : 30;
+    const issuesForValidation = preFiltered.slice(0, maxValidatorIssues);
+    const remainderIssues = preFiltered.slice(maxValidatorIssues);
+
     try {
-      const response = await openai.chat.completions.create({
+      const baseParams = {
         model: this.model,
         temperature: 0,
-        response_format: { type: 'json_object' },
+        max_tokens: lines > 120 ? 6144 : 4096,
         messages: [
-          { role: 'system', content: VALIDATOR_SYSTEM_PROMPT },
+          { role: 'system' as const, content: VALIDATOR_SYSTEM_PROMPT },
           {
-            role: 'user',
-            content: buildValidatorPrompt(code, language, preFiltered),
+            role: 'user' as const,
+            content: buildValidatorPrompt(code, language, issuesForValidation),
           },
         ],
-      });
+      };
+
+      let response;
+      try {
+        response = await openai.chat.completions.create({
+          ...baseParams,
+          response_format: { type: 'json_object' },
+        });
+      } catch (error) {
+        if (!isOpenRouter(this.configService)) {
+          throw error;
+        }
+        response = await openai.chat.completions.create(baseParams);
+      }
 
       const raw = response.choices[0]?.message?.content ?? '{}';
       const parsed = JSON.parse(raw) as {
@@ -64,7 +84,7 @@ export class IssueValidatorService {
 
       const validated = processIssues(
         (Array.isArray(parsed.issues) ? parsed.issues : [])
-          .map((item) => this.normalizeIssue(item as Record<string, unknown>))
+          .map((item) => normalizeReviewIssue(item as Record<string, unknown>))
           .filter((issue): issue is CodeReviewIssue => issue !== null),
         this.minConfidence,
       );
@@ -72,83 +92,40 @@ export class IssueValidatorService {
       const rejectedCount =
         typeof parsed.rejectedCount === 'number'
           ? parsed.rejectedCount
-          : Math.max(0, preFiltered.length - validated.length);
+          : Math.max(0, issuesForValidation.length - validated.length);
+
+      if (!validated.length) {
+        this.logger.warn('Validator returned no issues — keeping pre-filtered findings');
+        return {
+          issues: [...issuesForValidation, ...remainderIssues],
+          rejectedCount: 0,
+        };
+      }
 
       if (
-        preFiltered.length >= 4 &&
-        validated.length < Math.ceil(preFiltered.length * 0.55)
+        issuesForValidation.length >= 4 &&
+        validated.length < Math.ceil(issuesForValidation.length * 0.55)
       ) {
         this.logger.warn(
-          `Validator pruned too aggressively (${preFiltered.length} → ${validated.length}); keeping pre-filtered findings`,
+          `Validator pruned too aggressively (${issuesForValidation.length} → ${validated.length}); keeping pre-filtered findings`,
         );
-        return { issues: preFiltered, rejectedCount: 0 };
+        return {
+          issues: [...issuesForValidation, ...remainderIssues],
+          rejectedCount: 0,
+        };
       }
 
       this.logger.log(
-        `Validator: ${preFiltered.length} proposed → ${validated.length} validated (${rejectedCount} rejected)`,
+        `Validator: ${issuesForValidation.length} proposed → ${validated.length} validated (${rejectedCount} rejected)`,
       );
 
-      return { issues: validated, rejectedCount };
+      return {
+        issues: [...validated, ...remainderIssues],
+        rejectedCount,
+      };
     } catch (error) {
       this.logger.warn('Validator pass failed, using pre-filtered issues', error);
       return { issues: preFiltered, rejectedCount: 0 };
     }
-  }
-
-  private normalizeIssue(
-    parsed: Record<string, unknown>,
-  ): CodeReviewIssue | null {
-    const explanation =
-      typeof parsed.explanation === 'string'
-        ? parsed.explanation
-        : typeof parsed.message === 'string'
-          ? parsed.message
-          : '';
-
-    const title =
-      typeof parsed.title === 'string'
-        ? parsed.title
-        : explanation.slice(0, 80);
-
-    if (!title || !explanation) return null;
-
-    const suggestedFix =
-      typeof parsed.suggestedFix === 'string'
-        ? parsed.suggestedFix
-        : typeof parsed.suggestion === 'string'
-          ? parsed.suggestion
-          : '';
-
-    const category =
-      typeof parsed.category === 'string'
-        ? parsed.category
-        : typeof parsed.type === 'string'
-          ? parsed.type
-          : 'Bug';
-
-    const confidence =
-      typeof parsed.confidence === 'number' ? parsed.confidence : 0;
-
-    return {
-      title,
-      category,
-      type: category,
-      severity: this.normalizeSeverity(parsed.severity),
-      line: typeof parsed.line === 'number' ? parsed.line : null,
-      explanation,
-      message: explanation,
-      evidence: typeof parsed.evidence === 'string' ? parsed.evidence : '',
-      suggestedFix,
-      suggestion: suggestedFix,
-      confidence,
-    };
-  }
-
-  private normalizeSeverity(value: unknown): CodeReviewIssue['severity'] {
-    const severity = String(value ?? 'medium').toLowerCase();
-    if (['critical', 'high', 'medium', 'low'].includes(severity)) {
-      return severity as CodeReviewIssue['severity'];
-    }
-    return 'medium';
   }
 }

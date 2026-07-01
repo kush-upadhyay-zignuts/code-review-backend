@@ -1,28 +1,10 @@
 import {
-  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
   MaxLength,
   MinLength,
 } from 'class-validator';
-
-const SUPPORTED_LANGUAGES = [
-  'javascript',
-  'typescript',
-  'python',
-  'java',
-  'go',
-  'rust',
-  'csharp',
-  'php',
-  'ruby',
-  'kotlin',
-  'swift',
-  'other',
-] as const;
-
-export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];
 
 export class CreateCodeReviewDto {
   @IsString()
@@ -31,10 +13,9 @@ export class CreateCodeReviewDto {
   @MaxLength(50_000)
   code!: string;
 
+  /** Optional hint — when omitted the AI auto-detects any programming language. */
   @IsOptional()
   @IsString()
-  @IsIn(SUPPORTED_LANGUAGES)
-  language?: SupportedLanguage;
+  @MaxLength(80)
+  language?: string;
 }
-
-export { SUPPORTED_LANGUAGES };

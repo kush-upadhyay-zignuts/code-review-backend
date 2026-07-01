@@ -61,3 +61,10 @@ export function getAiModel(configService: ConfigService): string {
 
   return resolveAiModel(configService.get<string>('ai.model'), baseUrl);
 }
+
+export function isOpenRouter(configService: ConfigService): boolean {
+  const baseUrl =
+    configService.get<string>('ai.baseUrl')?.trim() ||
+    'https://openrouter.ai/api/v1';
+  return isOpenRouterBaseUrl(baseUrl);
+}

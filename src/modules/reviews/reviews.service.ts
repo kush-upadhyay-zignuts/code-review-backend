@@ -6,6 +6,7 @@ import {
   ReviewDocument,
   ReviewResultPayload,
 } from './schemas/review.schema';
+import { isPlaceholderLanguage, normalizeDetectedLanguage } from '../code-review/language-utils';
 
 @Injectable()
 export class ReviewsService {
@@ -32,17 +33,27 @@ export class ReviewsService {
       totalTokens: number;
       responseTimeMs: number;
     },
+    detectedLanguage?: string,
   ) {
+    const updateData: any = {
+      result,
+      overallScore: result.overallScore,
+      inputTokens: metrics.inputTokens,
+      outputTokens: metrics.outputTokens,
+      totalTokens: metrics.totalTokens,
+      responseTimeMs: metrics.responseTimeMs,
+    };
+
+    if (detectedLanguage) {
+      const normalized = normalizeDetectedLanguage(detectedLanguage);
+      if (normalized && !isPlaceholderLanguage(normalized)) {
+        updateData.language = normalized;
+      }
+    }
+
     return this.reviewModel.findByIdAndUpdate(
       reviewId,
-      {
-        result,
-        overallScore: result.overallScore,
-        inputTokens: metrics.inputTokens,
-        outputTokens: metrics.outputTokens,
-        totalTokens: metrics.totalTokens,
-        responseTimeMs: metrics.responseTimeMs,
-      },
+      updateData,
       { new: true },
     );
   }
@@ -121,7 +132,12 @@ export class ReviewsService {
 
   languageBreakdown(userId: string) {
     return this.reviewModel.aggregate([
-      { $match: { userId: new Types.ObjectId(userId) } },
+      {
+        $match: {
+          userId: new Types.ObjectId(userId),
+          language: { $nin: ['auto', 'auto-detected', '', null] },
+        },
+      },
       { $group: { _id: '$language', count: { $sum: 1 } } },
       { $sort: { count: -1 } },
       { $limit: 5 },

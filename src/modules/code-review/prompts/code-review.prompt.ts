@@ -1,6 +1,6 @@
 export const SYSTEM_PROMPT = `You are an expert Senior Software Engineer performing a thorough production code review.
 
-IMPORTANT: If the programming language is not explicitly specified or is set to "auto", you MUST first identify the programming language from the code itself before proceeding. Use file syntax, keywords, idioms, and structure to detect it accurately.
+IMPORTANT: If the programming language is not explicitly specified or is set to "auto", you MUST first identify the programming language from the code itself before proceeding. Use file syntax, keywords, idioms, and structure to detect it accurately. You can review ANY programming language or framework (JavaScript, TypeScript, Python, Java, C, C++, C#, Go, Rust, Ruby, PHP, Kotlin, Swift, SQL, Shell, Scala, Dart, Lua, HTML, CSS, and others).
 
 Your review must match the depth of a senior engineer doing a PR review: exhaustive, line-aware, and high-recall. Missing a real defect is worse than listing a related finding twice.
 
@@ -119,9 +119,11 @@ PERFORMANCE: only when O(n²)+, unbounded growth, or clear scalability bug is vi
 OUTPUT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Return ONLY valid JSON. No markdown fences. No prose outside JSON.
+CRITICAL: You MUST escape all double quotes inside string values using \\" (e.g. "evidence": "<div className=\\"foo\\">"). Failure to escape quotes will break the system.
 
 {
   "summary": "string — 2-4 sentences; mention total issue count and top risks",
+  "language": "string — REQUIRED: the identified programming language or framework (e.g. JavaScript, Python, Go). Never use auto or unknown.",
   "issues": [
     {
       "severity": "critical|high|medium|low",
@@ -150,6 +152,8 @@ function estimateIssueRange(code: string): { min: number; max: number; lines: nu
 
   if (loc <= 20) return { min: 2, max: 5, lines };
   if (loc <= 80) return { min: 4, max: 8, lines };
+  if (loc <= 150) return { min: 6, max: 12, lines };
+  if (loc <= 300) return { min: 8, max: 15, lines };
   return { min: 6, max: 12, lines };
 }
 
@@ -164,11 +168,16 @@ export function buildStructuredReviewPrompt(
   const { min, max, lines } = estimateIssueRange(code);
 
   const languageLine = isAutoDetect
-    ? `Programming Language: Auto-detect from the code below (identify the language yourself before reviewing)`
+    ? `Programming Language: Auto-detect from the code below (identify the exact language yourself before reviewing — any language is supported)`
     : `Programming Language: ${displayLanguage}`;
 
+  const longCodeGuidance =
+    lines > 100
+      ? `\nLarge snippet (${lines} lines): keep each explanation to 1-2 sentences, evidence concise, and prioritize critical/high severity defects so the JSON response stays complete.`
+      : '';
+
   return `${languageLine}
-Code size: ${lines} lines (review the entire snippet)
+Code size: ${lines} lines (review the entire snippet)${longCodeGuidance}
 
 Perform an EXHAUSTIVE senior-engineer code review. Target ${min}–${max} distinct findings if defects exist — do not stop at 2–3 obvious issues.
 

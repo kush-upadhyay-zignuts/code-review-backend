@@ -24,8 +24,11 @@ function getReviewPayload(request: Request): {
   };
 }
 
-function estimateTokens(code: string, language: string): number {
-  return Math.ceil((code.length + language.length) / 4) + 500;
+function estimateTokens(code: string): number {
+  const lines = code.split('\n').length;
+  const inputEstimate = Math.ceil(code.length / 4);
+  const outputEstimate = lines <= 80 ? 3000 : lines <= 150 ? 7000 : 12_000;
+  return inputEstimate + outputEstimate + 800;
 }
 
 @Injectable()
@@ -37,8 +40,8 @@ export class TokenBudgetGuard implements CanActivate {
       .switchToHttp()
       .getRequest<Request & { user: AuthUser }>();
     const userId = request.user.userId;
-    const { code, language } = getReviewPayload(request);
-    const estimated = estimateTokens(code, language);
+    const { code } = getReviewPayload(request);
+    const estimated = estimateTokens(code);
 
     const allowed = await this.usageService.checkTokenBudget(userId, estimated);
     if (!allowed) {

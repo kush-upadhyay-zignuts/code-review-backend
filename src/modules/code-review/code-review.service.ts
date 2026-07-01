@@ -4,8 +4,14 @@ import {
   buildStructuredReviewPrompt,
   SYSTEM_PROMPT,
 } from './prompts/code-review.prompt';
-import { createAiClient, getAiModel } from './ai-openai-client';
+import { createAiClient, getAiModel, isOpenRouter } from './ai-openai-client';
 import { CreateCodeReviewDto } from './dto/create-code-review.dto';
+import {
+  normalizeDetectedLanguage,
+  resolveMaxOutputTokens,
+} from './language-utils';
+import { normalizeReviewIssue } from './issue-normalizer';
+import { processIssues } from './issue-processor';
 import {
   CodeReviewIssue,
   CodeReviewMetrics,
@@ -14,6 +20,7 @@ import {
   TokenUsageResult,
 } from './interfaces/code-review.interface';
 import { IssueValidatorService } from './issue-validator.service';
+import OpenAI from 'openai';
 
 const PHASES = [
   'analyzing_syntax',
@@ -23,13 +30,14 @@ const PHASES = [
   'validating_findings',
 ] as const;
 
-const ISSUE_STREAM_DELAY_MS = 450;
+const ISSUE_STREAM_DELAY_MS = 200;
 
 @Injectable()
 export class CodeReviewService {
   private readonly logger = new Logger(CodeReviewService.name);
   private readonly model: string;
   private readonly maxOutputTokens: number;
+  private readonly minConfidence: number;
 
   constructor(
     private readonly configService: ConfigService,
@@ -38,8 +46,10 @@ export class CodeReviewService {
     this.model = getAiModel(this.configService);
     this.maxOutputTokens = this.configService.get<number>(
       'ai.maxOutputTokens',
-      4096,
+      8192,
     );
+    this.minConfidence =
+      this.configService.get<number>('ai.minConfidence') ?? 80;
   }
 
   async *reviewStream(
@@ -62,23 +72,13 @@ export class CodeReviewService {
     }
 
     const prompt = buildStructuredReviewPrompt(dto.code, dto.language ?? 'auto');
+    const outputTokenLimit = resolveMaxOutputTokens(dto.code, this.maxOutputTokens);
     let inputTokens = 0;
     let outputTokens = 0;
     let jsonBuffer = '';
 
     try {
-      const stream = await openai.chat.completions.create({
-        model: this.model,
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: prompt },
-        ],
-        stream: true,
-        stream_options: { include_usage: true },
-        max_tokens: this.maxOutputTokens,
-        temperature: 0.1,
-        response_format: { type: 'json_object' },
-      });
+      const stream = await this.createReviewStream(openai, prompt, outputTokenLimit);
 
       for await (const chunk of stream) {
         if (chunk.usage) {
@@ -106,7 +106,10 @@ export class CodeReviewService {
       if (!parsed) {
         yield {
           type: 'error',
-          data: { message: 'Failed to parse AI review response as JSON.' },
+          data: {
+            message:
+              'Failed to parse AI review response as JSON. Try again or use a shorter code snippet.',
+          },
         };
         yield {
           type: 'phase',
@@ -120,16 +123,34 @@ export class CodeReviewService {
       }
 
       const rawIssues = this.extractRawIssues(parsed);
-      const { issues: validatedIssues } = await this.issueValidator.validate(
+      this.logger.log(`Parsed ${rawIssues.length} raw issues from AI response`);
+
+      const detectedLanguage = normalizeDetectedLanguage(
+        this.readString(parsed.language),
         dto.code,
-        dto.language ?? 'auto',
-        rawIssues,
       );
+
+      let validatedIssues = (
+        await this.issueValidator.validate(
+          dto.code,
+          detectedLanguage ?? dto.language ?? 'auto',
+          rawIssues,
+        )
+      ).issues;
+
+      if (rawIssues.length > 0 && validatedIssues.length === 0) {
+        this.logger.warn(
+          'Validator returned 0 issues — falling back to AI findings',
+        );
+        validatedIssues = processIssues(rawIssues, this.minConfidence);
+      }
 
       yield {
         type: 'phase',
         data: { phase: 'validating_findings', status: 'complete' },
       };
+
+      this.logger.log(`Streaming ${validatedIssues.length} validated issues`);
 
       for (const issue of validatedIssues) {
         yield {
@@ -139,7 +160,7 @@ export class CodeReviewService {
         await this.delay(ISSUE_STREAM_DELAY_MS);
       }
 
-      const summary = this.buildSummary(parsed);
+      const summary = this.buildSummary(parsed, dto.code, detectedLanguage);
       if (summary) {
         yield {
           type: 'summary',
@@ -171,13 +192,48 @@ export class CodeReviewService {
     }
   }
 
+  private async createReviewStream(
+    openai: OpenAI,
+    prompt: string,
+    maxTokens: number,
+  ) {
+    const baseParams = {
+      model: this.model,
+      messages: [
+        { role: 'system' as const, content: SYSTEM_PROMPT },
+        { role: 'user' as const, content: prompt },
+      ],
+      stream: true as const,
+      stream_options: { include_usage: true },
+      max_tokens: maxTokens,
+      temperature: 0.1,
+    };
+
+    try {
+      return await openai.chat.completions.create({
+        ...baseParams,
+        response_format: { type: 'json_object' },
+      });
+    } catch (error) {
+      if (!isOpenRouter(this.configService)) {
+        throw error;
+      }
+
+      this.logger.warn(
+        'JSON response_format failed on OpenRouter — retrying without it',
+        error,
+      );
+      return openai.chat.completions.create(baseParams);
+    }
+  }
+
   private extractRawIssues(parsed: Record<string, unknown>): CodeReviewIssue[] {
     if (!Array.isArray(parsed.issues)) return [];
 
     return parsed.issues
       .map((raw) =>
         typeof raw === 'object' && raw !== null
-          ? this.normalizeIssue(raw as Record<string, unknown>)
+          ? normalizeReviewIssue(raw as Record<string, unknown>)
           : null,
       )
       .filter((issue): issue is CodeReviewIssue => issue !== null);
@@ -185,14 +241,24 @@ export class CodeReviewService {
 
   private buildSummary(
     parsed: Record<string, unknown>,
+    code: string,
+    detectedLanguage?: string,
   ): CodeReviewSummary | null {
     const summaryText = this.readString(parsed.summary);
     if (!summaryText) return null;
 
     const metrics = this.parseMetrics(parsed.metrics);
     const overallScore = Math.round(metrics.codeQualityScore / 10);
+    const language =
+      detectedLanguage ??
+      normalizeDetectedLanguage(this.readString(parsed.language), code);
 
-    return { summary: summaryText, overallScore, metrics };
+    return {
+      summary: summaryText,
+      overallScore,
+      metrics,
+      language,
+    };
   }
 
   private parseMetrics(value: unknown): CodeReviewMetrics {
@@ -214,68 +280,38 @@ export class CodeReviewService {
     return Math.min(100, Math.max(0, Math.round(num)));
   }
 
-  private normalizeIssue(
-    parsed: Record<string, unknown>,
-  ): CodeReviewIssue | null {
-    const explanation =
-      this.readString(parsed.explanation) || this.readString(parsed.message);
-    const title = this.readString(parsed.title) || explanation.slice(0, 80);
-
-    if (!title || !explanation) return null;
-
-    const category =
-      this.readString(parsed.category) ||
-      this.readString(parsed.issueType) ||
-      this.readString(parsed.type) ||
-      'Bug';
-
-    const suggestedFix =
-      this.readString(parsed.suggestedFix) ||
-      this.readString(parsed.suggestion);
-
-    const confidence =
-      typeof parsed.confidence === 'number' ? parsed.confidence : 0;
-
-    return {
-      title,
-      category: category === 'issue' ? 'Bug' : category,
-      type: category === 'issue' ? 'Bug' : category,
-      severity: this.normalizeSeverity(parsed.severity),
-      line: typeof parsed.line === 'number' ? parsed.line : null,
-      explanation,
-      message: explanation,
-      evidence: this.readString(parsed.evidence),
-      suggestedFix,
-      suggestion: suggestedFix,
-      confidence,
-    };
-  }
-
   private tryParseJsonObject(text: string): Record<string, unknown> | null {
     try {
       const cleaned = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
       return JSON.parse(cleaned) as Record<string, unknown>;
     } catch {
-      return this.repairJson(text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim());
+      this.logger.warn(
+        `Failed to parse AI response normally. Attempting repair. Length=${text.length}`,
+      );
+      return this.repairJson(
+        text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim(),
+      );
     }
   }
 
   private repairJson(text: string): Record<string, unknown> | null {
     let lastBrace = text.lastIndexOf('}');
     let attempts = 0;
-    while (lastBrace !== -1 && attempts < 10) {
+    while (lastBrace !== -1 && attempts < 20) {
       const truncated = text.substring(0, lastBrace + 1);
       const options = [
         truncated,
         truncated + ']}',
         truncated + '}',
         truncated + '}]}',
+        truncated + '"}]}',
       ];
 
       for (const opt of options) {
         try {
           const parsed = JSON.parse(opt);
           if (parsed && typeof parsed === 'object' && Array.isArray(parsed.issues)) {
+            this.logger.warn(`Repaired truncated JSON with ${parsed.issues.length} issues`);
             return parsed as Record<string, unknown>;
           }
         } catch {
@@ -290,14 +326,6 @@ export class CodeReviewService {
 
   private readString(value: unknown): string {
     return typeof value === 'string' ? value : '';
-  }
-
-  private normalizeSeverity(value: unknown): CodeReviewIssue['severity'] {
-    const severity = String(value ?? 'medium').toLowerCase();
-    if (['critical', 'high', 'medium', 'low'].includes(severity)) {
-      return severity as CodeReviewIssue['severity'];
-    }
-    return 'medium';
   }
 
   private delay(ms: number): Promise<void> {

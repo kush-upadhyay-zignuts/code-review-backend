@@ -27,6 +27,7 @@ export interface CodeReviewSummary {
   summary: string;
   overallScore: number;
   metrics: CodeReviewMetrics;
+  language?: string;
 }
 
 export interface StreamEvent {
