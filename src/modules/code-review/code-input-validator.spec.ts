@@ -71,4 +71,56 @@ function UserDashboard() {
 }`).valid,
     ).toBe(true);
   });
+
+  it('accepts Next.js layout.tsx style snippets', () => {
+    const layoutTsx = `import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import { AppRouterCacheProvider } from "@mui/material-nextjs/v16-appRouter";
+import { AppProviders } from "@/components/providers/app-providers";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: 'CodeReview AI',
+  description: 'AI-powered code review with streaming analysis',
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body>
+        <AppRouterCacheProvider>
+          <AppProviders>{children}</AppProviders>
+        </AppRouterCacheProvider>
+      </body>
+    </html>
+  );
+}`;
+
+    expect(validateCodeInput(layoutTsx).valid).toBe(true);
+  });
+
+  it('rejects casual prose and parenthetical sentences', () => {
+    expect(validateCodeInput('This is normal text (not code)').valid).toBe(false);
+    expect(validateCodeInput('Hello world please review this thanks').valid).toBe(
+      false,
+    );
+  });
+
+  it('rejects prose that mentions code keywords in plain English', () => {
+    expect(
+      validateCodeInput('import is not here\nexport neither\nfunction words in text')
+        .valid,
+    ).toBe(false);
+    expect(validateCodeInput('class is in session today for all students.').valid).toBe(
+      false,
+    );
+    expect(validateCodeInput('interface with the user through text only').valid).toBe(
+      false,
+    );
+    expect(validateCodeInput('type of document: plain text').valid).toBe(false);
+  });
 });

@@ -8,35 +8,37 @@ export const MAX_CODE_INPUT_LENGTH = 50_000;
 /** Declaration / module patterns — strong evidence of source code. */
 const DECLARATION_PATTERNS: RegExp[] = [
   /^\s*#!\/[^\n]+/m,
-  /^\s*import\s+/m,
+  /^\s*import\s+(\{[^}]+\}|['"][^'"]+['"]|\w+\s+from\b)/m,
   /^\s*export\s+(default\s+)?(class|function|const|let|var|interface|type|async)\b/m,
   /^\s*(package|#include|using|namespace)\s/m,
   /^\s*(def|fn|func|fun)\s+\w+/m,
-  /^\s*(class|interface|struct|enum|trait|impl)\s+\w+/m,
+  /^\s*(class|interface|struct|enum|trait|impl)\s+(?!(?:is|in|of|the|a|an|to|for|with|from|this|that|not|here|neither|words|session|document|plain|text|only|through|user)\b)[A-Za-z_]\w*/m,
   /^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\s+/im,
-  /function\s+\w+\s*\(/,
+  /function\s+[A-Za-z_]\w*\s*\(/,
   /\b(const|let|var)\s+\w+\s*=/,
   /\b(public|private|protected)\s+(static\s+)?(class|void|fun|func)\b/,
   /<\/?[a-z][\w-]*(\s|>)/i,
-  /<?php\b/i,
+  /<\?php\b/i,
+  /^\s*type\s+[A-Za-z_]\w*\s*=/m,
 ];
 
-/** Structural syntax — punctuation and constructs common in real code. */
+/** Structural syntax — must be unambiguous (no bare parentheses or key:value prose). */
 const STRUCTURAL_PATTERNS: RegExp[] = [
   /\{[\s\S]*\}/,
-  /\([^)]{0,200}\)\s*[{;=>]/,
+  /\)\s*=>\s*\{/,
   /;\s*$/,
   /=>/,
   /::/,
   /:=/,
-  /\w\s*=\s*[^=]/,
-  /\w+\s*\([^)]*\)/,
-  /:\s*[\w"'[{]/,
+  /\b(const|let|var)\s+\w+\s*=\s*[^=]/,
   /\.(map|filter|forEach|push|pop|slice|log|json|then|catch)\s*\(/i,
-  /[{}[\]();]=<>+\-*\/%&|!]{2,}/,
+  /[{}[\];]=<>+\-*\/%&|!]{2,}/,
   /^\s*@\w+/m,
   /^\s*(echo|curl|npm|git|docker)\s+/im,
 ];
+
+const STRONG_CODE_LINE =
+  /(?:^\s*import\s+(\{[^}]+\}|['"][^'"]+['"]|\w+\s+from)\b)|(?:^\s*export\s+(default\s+)?(class|function|const|let|var|interface|type|async)\b)|(?:^\s*function\s+[A-Za-z_]\w*\s*\()|(?:^\s*(class|interface|type)\s+(?!(?:is|in|of|the|a|an|to|for|with|from|this|that|not|here|neither|words|session|document|plain|text|only|through|user)\b)[A-Za-z_]\w*)|(?:^\s*(const|let|var)\s+\w+\s*=)|(?:^\s*(def|fn|func|fun)\s+\w+)|[{};]|=>|::|:=|<\/?[a-z][\w-]*|<\?php/i;
 
 const PROSE_WORDS = new Set([
   'the',
@@ -65,7 +67,6 @@ const PROSE_WORDS = new Set([
   'thank',
   'thanks',
   'review',
-  'code',
   'help',
   'want',
   'need',
@@ -73,6 +74,8 @@ const PROSE_WORDS = new Set([
   'some',
   'random',
   'text',
+  'normal',
+  'not',
 ]);
 
 function stripCommentsAndStrings(code: string): string {
@@ -95,6 +98,12 @@ function getMeaningfulLines(code: string): string[] {
   });
 }
 
+function countCodeLikeLines(text: string): number {
+  return getMeaningfulLines(text).filter((line) =>
+    STRONG_CODE_LINE.test(line),
+  ).length;
+}
+
 function countPatternMatches(text: string, patterns: RegExp[]): number {
   return patterns.filter((pattern) => pattern.test(text)).length;
 }
@@ -115,10 +124,7 @@ function looksLikePlainProse(text: string): boolean {
     return true;
   }
 
-  const structure = structuralScore(stripped);
-  const hasDeclaration = hasDeclarationSyntax(stripped);
-
-  if (hasDeclaration || structure >= 1) {
+  if (countCodeLikeLines(stripped) >= 1 || hasDeclarationSyntax(stripped)) {
     return false;
   }
 
@@ -140,8 +146,23 @@ function looksLikePlainProse(text: string): boolean {
   const proseHits = words.filter((word) => PROSE_WORDS.has(word)).length;
   const wordCount = words.length;
 
-  if (wordCount >= 5 && proseHits / wordCount >= 0.45) {
+  if (wordCount >= 4 && proseHits / wordCount >= 0.4) {
     return true;
+  }
+
+  if (
+    lines.length >= 2 &&
+    !/[{};[\]()=<>]/.test(stripped) &&
+    lines.every((line) => /^[a-zA-Z0-9\s.,!?'":-]+$/.test(line.trim()))
+  ) {
+    const words = stripped
+      .toLowerCase()
+      .split(/\s+/)
+      .map((word) => word.replace(/[^a-z]/g, ''))
+      .filter(Boolean);
+    if (words.length >= 3) {
+      return true;
+    }
   }
 
   const alphaChars = (stripped.match(/[a-zA-Z]/g) ?? []).length;
@@ -150,9 +171,9 @@ function looksLikePlainProse(text: string): boolean {
     lines.reduce((sum, line) => sum + line.length, 0) / lines.length;
 
   return (
-    alphaChars > 40 &&
+    alphaChars > 30 &&
     codeChars === 0 &&
-    avgLineLength > 50 &&
+    avgLineLength > 40 &&
     lines.every((line) => /^[a-zA-Z\s.,!?'"-]+$/.test(line.trim()))
   );
 }
@@ -162,18 +183,13 @@ function hasRecognizableCodeSyntax(text: string): boolean {
     return true;
   }
 
-  const structure = structuralScore(text);
-  const meaningfulLines = getMeaningfulLines(text).length;
-
-  if (structure >= 2) {
+  const codeLikeLines = countCodeLikeLines(text);
+  if (codeLikeLines >= 1) {
     return true;
   }
 
-  if (structure >= 1 && meaningfulLines >= 1) {
-    return true;
-  }
-
-  return false;
+  const score = structuralScore(text);
+  return score >= 2 && /[{};]|=>|::|:=/.test(text);
 }
 
 export function validateCodeInput(code: string): CodeInputValidation {

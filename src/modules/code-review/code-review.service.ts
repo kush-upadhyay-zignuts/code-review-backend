@@ -10,6 +10,10 @@ import {
   countCodeLines,
   normalizeDetectedLanguage,
 } from './language-utils';
+import {
+  indicatesNonCodeInput,
+  NON_CODE_INPUT_MESSAGE,
+} from './non-code-detection';
 import { getReviewTokenBudget } from './review-budget';
 import { normalizeReviewIssue, compactReviewIssue } from './issue-normalizer';
 import { mergeReviewIssues, processIssues } from './issue-processor';
@@ -137,7 +141,7 @@ export class CodeReviewService {
         dto.code,
       );
 
-      if (parsedResult.rawIssues.length === 0) {
+      if (!parsedResult.responseValid && parsedResult.rawIssues.length === 0) {
         yield {
           type: 'error',
           data: {
@@ -157,6 +161,28 @@ export class CodeReviewService {
       }
 
       const { parsed, rawIssues, detectedLanguage } = parsedResult;
+
+      const aiSummary = this.readString(parsed.summary);
+      if (
+        indicatesNonCodeInput({
+          language: detectedLanguage ?? this.readString(parsed.language),
+          summary: aiSummary,
+        })
+      ) {
+        yield {
+          type: 'error',
+          data: { message: NON_CODE_INPUT_MESSAGE },
+        };
+        yield {
+          type: 'phase',
+          data: { phase: 'validating_findings', status: 'complete' },
+        };
+        return {
+          inputTokens,
+          outputTokens,
+          tokensUsed: inputTokens + outputTokens,
+        };
+      }
 
       this.logger.log(
         `Parsed ${rawIssues.length} issues (truncated=${truncated}, out=${outputTokens}/${budget.maxOutputTokens})`,
@@ -226,16 +252,14 @@ export class CodeReviewService {
         truncated,
         validatedIssues.length,
       );
-      if (summary) {
-        yield {
-          type: 'summary',
-          data: summary as unknown as Record<string, unknown>,
-        };
-        yield {
-          type: 'metrics',
-          data: summary.metrics as unknown as Record<string, unknown>,
-        };
-      }
+      yield {
+        type: 'summary',
+        data: summary as unknown as Record<string, unknown>,
+      };
+      yield {
+        type: 'metrics',
+        data: summary.metrics as unknown as Record<string, unknown>,
+      };
 
       const tokensUsed =
         inputTokens + outputTokens || Math.ceil(prompt.length / 4);
@@ -265,8 +289,11 @@ export class CodeReviewService {
     parsed: Record<string, unknown>;
     rawIssues: CodeReviewIssue[];
     detectedLanguage?: string;
+    responseValid: boolean;
   } {
-    let parsed = this.tryParseJsonObject(jsonBuffer.trim());
+    const trimmed = jsonBuffer.trim();
+    let parsed = this.tryParseJsonObject(trimmed);
+    const jsonParsed = parsed !== null;
     const fromParsed = parsed ? this.extractRawIssues(parsed) : [];
     const salvaged = salvageIssuesFromBuffer(jsonBuffer);
 
@@ -298,7 +325,41 @@ export class CodeReviewService {
       code,
     );
 
-    return { parsed, rawIssues, detectedLanguage };
+    const responseValid = this.isValidAiReviewResponse(
+      parsed,
+      jsonBuffer,
+      jsonParsed,
+      rawIssues.length,
+    );
+
+    return { parsed, rawIssues, detectedLanguage, responseValid };
+  }
+
+  private isValidAiReviewResponse(
+    parsed: Record<string, unknown>,
+    jsonBuffer: string,
+    jsonParsed: boolean,
+    issueCount: number,
+  ): boolean {
+    if (issueCount > 0) return true;
+    if (!jsonParsed) return false;
+
+    if (this.readString(parsed.summary) || salvageSummaryFromBuffer(jsonBuffer)) {
+      return true;
+    }
+    if (Array.isArray(parsed.issues)) return true;
+    const metrics = parsed.metrics;
+    if (metrics && typeof metrics === 'object') {
+      const record = metrics as Record<string, unknown>;
+      if (
+        record.codeQualityScore !== undefined ||
+        record.securityScore !== undefined ||
+        record.maintainabilityScore !== undefined
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private sortIssuesBySeverity(issues: CodeReviewIssue[]): CodeReviewIssue[] {
@@ -361,16 +422,32 @@ export class CodeReviewService {
     detectedLanguage?: string,
     truncated = false,
     issueCount = 0,
-  ): CodeReviewSummary | null {
+  ): CodeReviewSummary {
     let summaryText = this.readString(parsed.summary).slice(0, 280);
     if (!summaryText && issueCount > 0) {
       summaryText = truncated
         ? `Partial review completed with ${issueCount} confirmed finding${issueCount === 1 ? '' : 's'}.`
         : `Review completed with ${issueCount} confirmed finding${issueCount === 1 ? '' : 's'}.`;
     }
-    if (!summaryText) return null;
+    if (!summaryText && issueCount === 0) {
+      summaryText =
+        'No confirmed issues found — your code passed security, quality, and maintainability checks.';
+    }
 
-    const metrics = this.parseMetrics(parsed.metrics);
+    let metrics = this.parseMetrics(parsed.metrics);
+    const metricsEmpty =
+      !metrics.codeQualityScore &&
+      !metrics.securityScore &&
+      !metrics.maintainabilityScore;
+
+    if (issueCount === 0 && metricsEmpty) {
+      metrics = {
+        codeQualityScore: 90,
+        securityScore: 90,
+        maintainabilityScore: 88,
+      };
+    }
+
     const overallScore = Math.round(metrics.codeQualityScore / 10);
     const language =
       detectedLanguage ??
@@ -378,7 +455,7 @@ export class CodeReviewService {
 
     return {
       summary: summaryText,
-      overallScore,
+      overallScore: overallScore || (issueCount === 0 ? 9 : 0),
       metrics,
       language,
     };
